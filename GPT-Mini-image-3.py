@@ -25,6 +25,81 @@ from torch.utils.data import DataLoader, Dataset, ConcatDataset
 from torchvision import transforms
 from PIL import Image
 
+# ----------------- ADIÇÃO MÍNIMA: suporte a datasets do Hugging Face -----------------
+try:
+    from datasets import load_dataset
+    HF_AVAILABLE = True
+except Exception:
+    load_dataset = None
+    HF_AVAILABLE = False
+
+# 6 datasets "pesados / variados" que vamos tentar carregar quando paths==[]:
+# - COCO, OpenImages v7, ImageNet-1k, Visual Genome, Places365 e um fallback OpenImages.
+DEFAULT_HF_DATASETS = [
+    "HuggingFaceM4/COCO",          # COCO (variações no hub)
+    "bitmind/open-images-v7",      # Open Images V7
+    "mlx-vision/imagenet-1k",      # ImageNet-1k (ILSVRC)
+    "ranjaykrishna/visual_genome", # Visual Genome
+    "ljnlonoljpiljm/places365-256px", # Places365 (variante no Hub)
+    "nlphuji/open_images_dataset_v7"  # outro wrapper OpenImages v7
+]
+
+class HuggingFaceImageDataset(Dataset):
+    def __init__(self, hf_ds, name: str = "hf_ds", image_size: Tuple[int,int]=(3840,2160)):
+        self.ds = hf_ds
+        self.name = name
+        self.transform = transforms.Compose([
+            transforms.Resize(image_size),
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(0.1,0.1,0.1,0.02),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5]*3, [0.5]*3)
+        ])
+        self.image_size = image_size
+
+    def __len__(self):
+        return len(self.ds)
+
+    def __getitem__(self, idx):
+        item = self.ds[int(idx)]
+        img = None
+        cap = None
+        # tenta chaves comuns
+        for k in ("image","img","pixels","photo","picture"):
+            if k in item:
+                img = item[k]
+                break
+        for k in ("caption","text","label","title","name"):
+            if k in item:
+                cap = item[k]
+                break
+        pil = None
+        # aceitar PIL.Image, path, bytes-like, ou ImageFeature
+        try:
+            if isinstance(img, Image.Image):
+                pil = img.convert("RGB")
+            elif isinstance(img, dict) and "path" in img and os.path.exists(img["path"]):
+                pil = Image.open(img["path"]).convert("RGB")
+            elif isinstance(img, str) and os.path.exists(img):
+                pil = Image.open(img).convert("RGB")
+            elif hasattr(img, "to_pil_image"):
+                pil = img.to_pil_image().convert("RGB")
+            else:
+                # algumas entradas são ImageFeature com .pil_object ou similar
+                if "image" in item and isinstance(item["image"], Image.Image):
+                    pil = item["image"].convert("RGB")
+        except Exception:
+            pil = None
+
+        if pil is None:
+            pil = Image.new("RGB", self.image_size, (127,127,127))
+
+        if cap is None:
+            cap = str(item.get("label", item.get("class", f"{self.name}_idx_{idx}")))
+
+        return self.transform(pil), str(cap)
+
+# ----------------- seu código original (sem mudanças) -----------------
 @dataclass
 class Config:
     image_width: int = 3840
@@ -253,16 +328,69 @@ from torchvision.datasets import CIFAR10
 
 def make_dataloader(paths: List[str], batch_size:int=1, max_items_per_ds:Optional[int]=None):
     ds_list = []
-    for p in paths:
-        if not p:
+
+    # se o usuário não passou paths e a lib 'datasets' estiver disponível,
+    # tentamos carregar os DEFAULT_HF_DATASETS (cada falha é apenas pulada).
+    if len(paths) == 0 and HF_AVAILABLE:
+        for ds_id in DEFAULT_HF_DATASETS:
+            try:
+                try:
+                    hf = load_dataset(ds_id, split="train")
+                except Exception:
+                    tmp = load_dataset(ds_id)
+                    if isinstance(tmp, dict):
+                        first_split = list(tmp.keys())[0]
+                        hf = tmp[first_split]
+                    else:
+                        hf = tmp
+                if max_items_per_ds is not None:
+                    hf = hf.select(range(min(len(hf), max_items_per_ds)))
+                ds_list.append(HuggingFaceImageDataset(hf, name=ds_id, image_size=cfg.image_size))
+                print(f"[DATA] Adicionado HF dataset: {ds_id} (itens: {len(hf)})")
+            except Exception as e:
+                print(f"[DATA] Falha ao carregar {ds_id}: {e} — pulando.")
+    else:
+        # comportamento original: iterar paths e carregar CIFAR10 quando p é vazio
+        for p in paths:
+            if not p:
+                ds = CIFAR10(root='./data', train=True, download=True, transform=transforms.Compose([
+                    transforms.Resize(cfg.image_size), transforms.ToTensor(), transforms.Normalize([0.5]*3,[0.5]*3)
+                ]))
+                ds_list.append(ds)
+            elif p.startswith('hf:'):
+                if HF_AVAILABLE:
+                    ds_id = p[len('hf:'):]
+                    try:
+                        try:
+                            hf = load_dataset(ds_id, split="train")
+                        except Exception:
+                            tmp = load_dataset(ds_id)
+                            if isinstance(tmp, dict):
+                                first_split = list(tmp.keys())[0]
+                                hf = tmp[first_split]
+                            else:
+                                hf = tmp
+                        if max_items_per_ds is not None:
+                            hf = hf.select(range(min(len(hf), max_items_per_ds)))
+                        ds_list.append(HuggingFaceImageDataset(hf, name=ds_id, image_size=cfg.image_size))
+                        print(f"[DATA] Adicionado HF dataset pedido: {ds_id}")
+                    except Exception as e:
+                        print(f"[DATA] Falha ao carregar hf:{ds_id}: {e} — pulando.")
+                else:
+                    print(f"[DATA] 'hf:' pedido mas biblioteca 'datasets' não está disponível — pulando hf:{p}")
+            else:
+                ds_list.append(LocalImageDataset(p))
+
+    # fallback: se nada foi carregado, usa CIFAR10 como antes
+    if len(ds_list) == 0:
+        try:
             ds = CIFAR10(root='./data', train=True, download=True, transform=transforms.Compose([
                 transforms.Resize(cfg.image_size), transforms.ToTensor(), transforms.Normalize([0.5]*3,[0.5]*3)
             ]))
             ds_list.append(ds)
-        elif p.startswith('hf:'):
-            continue
-        else:
-            ds_list.append(LocalImageDataset(p))
+        except Exception:
+            raise RuntimeError("Nenhum dataset disponível e CIFAR-10 não pôde ser baixado. Instale 'datasets' ou forneça pastas locais.")
+
     combined = ConcatDataset(ds_list)
     loader = DataLoader(combined, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
     return loader
