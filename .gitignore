@@ -1,0 +1,41 @@
+# Arquivos do Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ambientes virtuais
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Arquivos de log
+*.log
+
+# Checkpoints de treinamento (PyTorch, TF, etc.)
+*.pt
+*.pth
+*.ckpt
+*.h5
+
+# Configs de editor
+.vscode/
+.idea/
+*.swp
+
+# Jupyter/Colab
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# Dados pesados
+data/
+datasets/
+*.zip
+*.tar
+*.gz
+
+# Sistema
+.DS_Store
+Thumbs.db
