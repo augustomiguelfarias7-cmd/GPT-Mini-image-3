@@ -9,4 +9,4 @@ Este projeto é um modelo experimental de geração de imagens chamado **GPT-Min
 Clone o repositório:
 
 ```bash
-
+https://github.com/augustomiguelfarias7-cmd/GPT-Mini-image-3.git
